@@ -189,43 +189,6 @@ needs_official_setup() {
     [ ! -f "$CONFIG_FILE" ] || [ ! -f "$APP_DIR/.installed" ]
 }
 
-start_official_setup() {
-    if [ ! -x "$APP_BIN" ]; then
-        log "首次安装：本地未找到 $APP_NAME，先下载最新版本"
-        install_latest_release
-        download_result=$?
-        if [ "$download_result" -ne 0 ] && [ "$download_result" -ne 2 ]; then
-            log "错误：下载 $APP_NAME 失败，无法启动 Setup Wizard"
-            return 1
-        fi
-    fi
-
-    if [ ! -x "$APP_BIN" ]; then
-        log "错误：未找到可执行文件 $APP_BIN"
-        return 1
-    fi
-
-    if check_port; then
-        log "端口 $PORT 已被占用，无法启动 Setup Wizard"
-        return 1
-    fi
-
-    export SERVER_HOST="127.0.0.1"
-    export SERVER_PORT="$PORT"
-
-    log "启动官方 Setup Wizard，监听 127.0.0.1:$PORT"
-    nohup "$APP_BIN" >/dev/null 2>&1 &
-    sleep 3
-
-    if check_port; then
-        log "官方 Setup Wizard 已启动，请通过反代域名或本机端口完成初始化"
-        return 0
-    fi
-
-    log "错误：官方 Setup Wizard 启动失败"
-    return 1
-}
-
 read_local_version() {
     if [ -f "$VERSION_FILE" ]; then
         cat "$VERSION_FILE"
@@ -300,14 +263,40 @@ start_redis() {
 
 start_sub2api() {
     if [ ! -x "$APP_BIN" ]; then
+        log "本地未找到 $APP_NAME，先下载最新版本"
+        install_latest_release
+        download_result=$?
+        if [ "$download_result" -ne 0 ] && [ "$download_result" -ne 2 ]; then
+            log "错误：下载 $APP_NAME 失败"
+            return 1
+        fi
+    fi
+
+    if [ ! -x "$APP_BIN" ]; then
         log "错误：未找到可执行文件 $APP_BIN"
         return 1
     fi
 
     if needs_official_setup; then
-        log "检测到尚未完成官方安装，转为启动 Setup Wizard"
-        start_official_setup
-        return $?
+        if check_port; then
+            log "端口 $PORT 已被占用，无法启动首次安装向导"
+            return 1
+        fi
+
+        export SERVER_HOST="127.0.0.1"
+        export SERVER_PORT="$PORT"
+
+        log "检测到尚未完成官方安装，直接启动 $APP_NAME 进入 Setup Wizard"
+        nohup "$APP_BIN" >/dev/null 2>&1 &
+        sleep 3
+
+        if check_port; then
+            log "Setup Wizard 已启动，请通过反代域名或本机端口完成初始化"
+            return 0
+        fi
+
+        log "错误：首次安装向导启动失败"
+        return 1
     fi
 
     if is_sub2api_running; then
@@ -468,10 +457,11 @@ show_status() {
 run_watchdog() {
     ensure_initial_templates || return 0
 
+    start_redis || return 1
+
     if needs_official_setup; then
-        log "检测到尚未完成官方安装，启动 Setup Wizard"
-        start_redis || return 1
-        start_official_setup || return 1
+        log "检测到尚未完成官方安装，启动首次安装向导"
+        start_sub2api || return 1
         clean_logs
         ensure_crontab
         return 0
