@@ -191,6 +191,16 @@ needs_official_setup() {
 
 start_official_setup() {
     if [ ! -x "$APP_BIN" ]; then
+        log "首次安装：本地未找到 $APP_NAME，先下载最新版本"
+        install_latest_release
+        download_result=$?
+        if [ "$download_result" -ne 0 ] && [ "$download_result" -ne 2 ]; then
+            log "错误：下载 $APP_NAME 失败，无法启动 Setup Wizard"
+            return 1
+        fi
+    fi
+
+    if [ ! -x "$APP_BIN" ]; then
         log "错误：未找到可执行文件 $APP_BIN"
         return 1
     fi
