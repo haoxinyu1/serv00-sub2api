@@ -28,10 +28,6 @@ CRON_ENTRY="*/2 * * * * nohup $SCRIPT_PATH >/dev/null 2>&1"
 
 GITHUB_PROJECT='KiritoXDone/Sub2API-Freebsd'
 PORT='6789'
-DB_HOST_DEFAULT=''
-DB_PORT_DEFAULT='5432'
-DB_USER_DEFAULT=''
-DB_NAME_DEFAULT=''
 REDIS_PORT='2345'
 REDIS_DATA_DIR="$APP_DIR/redis"
 
@@ -100,17 +96,8 @@ prompt_required_value() {
 
 set_default_config_values() {
     CFG_SERVER_PORT=""
-    CFG_FRONTEND_URL="https://your-domain.example"
-    CFG_DB_HOST="$DB_HOST_DEFAULT"
-    CFG_DB_PORT="$DB_PORT_DEFAULT"
-    CFG_DB_USER="$DB_USER_DEFAULT"
-    CFG_DB_PASSWORD="please_replace_with_your_postgresql_password"
-    CFG_DB_NAME="$CFG_DB_USER"
     CFG_REDIS_PORT="$REDIS_PORT"
     CFG_REDIS_PASSWORD="please_replace_with_your_redis_password"
-    CFG_ADMIN_EMAIL="admin@example.com"
-    CFG_ADMIN_PASSWORD="please_change_to_a_strong_password"
-    CFG_API_KEY_PREFIX="sk-"
 }
 
 collect_interactive_config() {
@@ -118,163 +105,20 @@ collect_interactive_config() {
 
     echo "" > /dev/tty
     echo "===== Sub2API 首次初始化 =====" > /dev/tty
-    echo "直接回车使用默认值。密码输入将明文显示，便于核对。" > /dev/tty
+    echo "本脚本只准备 Redis 和运行环境，不预生成 config.yaml。" > /dev/tty
+    echo "随后会按你指定的端口启动官方 Setup Wizard，请在浏览器中完成数据库、前端地址和管理员初始化。" > /dev/tty
     echo "" > /dev/tty
 
     prompt_required_value "Sub2API 服务端口" "$CFG_SERVER_PORT" CFG_SERVER_PORT
-    prompt_value "前端访问地址 frontend_url" "$CFG_FRONTEND_URL" CFG_FRONTEND_URL
-    prompt_value "PostgreSQL 主机 DB_HOST" "$CFG_DB_HOST" CFG_DB_HOST
-    prompt_value "PostgreSQL 端口" "$CFG_DB_PORT" CFG_DB_PORT
-    prompt_value "PostgreSQL 用户名 DB_USER" "$CFG_DB_USER" CFG_DB_USER
-    if [ -z "$CFG_DB_NAME" ] && [ -n "$CFG_DB_USER" ]; then
-        CFG_DB_NAME="$CFG_DB_USER"
-    fi
-    prompt_value "PostgreSQL 密码" "$CFG_DB_PASSWORD" CFG_DB_PASSWORD
-    prompt_value "PostgreSQL 数据库名" "$CFG_DB_NAME" CFG_DB_NAME
     prompt_value "Redis 端口" "$CFG_REDIS_PORT" CFG_REDIS_PORT
     prompt_value "Redis 密码" "$CFG_REDIS_PASSWORD" CFG_REDIS_PASSWORD
-    prompt_value "管理员邮箱 admin_email" "$CFG_ADMIN_EMAIL" CFG_ADMIN_EMAIL
-    prompt_value "管理员密码 admin_password" "$CFG_ADMIN_PASSWORD" CFG_ADMIN_PASSWORD
-    prompt_value "API Key 前缀 api_key_prefix" "$CFG_API_KEY_PREFIX" CFG_API_KEY_PREFIX
 
     PORT="$CFG_SERVER_PORT"
     REDIS_PORT="$CFG_REDIS_PORT"
 }
 
-yaml_escape() {
-    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
-}
-
 redis_escape() {
     printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
-}
-
-write_config_file() {
-    server_port="$1"
-    frontend_url="$2"
-    db_host="$3"
-    db_port="$4"
-    db_user="$5"
-    db_password="$6"
-    db_name="$7"
-    redis_port="$8"
-    redis_password="$9"
-    admin_email="${10}"
-    admin_password="${11}"
-    api_key_prefix="${12}"
-
-    jwt_secret=$(generate_hex_secret)
-    totp_key=$(generate_hex_secret)
-
-    if [ -z "$jwt_secret" ]; then
-        jwt_secret="please_replace_with_openssl_rand_hex_32"
-    fi
-
-    if [ -z "$totp_key" ]; then
-        totp_key="please_replace_with_another_openssl_rand_hex_32"
-    fi
-
-    esc_frontend_url=$(yaml_escape "$frontend_url")
-    esc_db_host=$(yaml_escape "$db_host")
-    esc_db_user=$(yaml_escape "$db_user")
-    esc_db_password=$(yaml_escape "$db_password")
-    esc_db_name=$(yaml_escape "$db_name")
-    esc_redis_password=$(yaml_escape "$redis_password")
-    esc_admin_email=$(yaml_escape "$admin_email")
-    esc_admin_password=$(yaml_escape "$admin_password")
-    esc_api_key_prefix=$(yaml_escape "$api_key_prefix")
-    esc_jwt_secret=$(yaml_escape "$jwt_secret")
-    esc_totp_key=$(yaml_escape "$totp_key")
-    esc_log_file=$(yaml_escape "${LOG_DIR}/sub2api-app.log")
-    esc_data_dir=$(yaml_escape "${DATA_DIR}")
-
-    if [ -n "$server_port" ]; then
-        server_port_line="  port: ${server_port}"
-    else
-        server_port_line="  # port: 6789"
-    fi
-
-    cat > "$CONFIG_FILE" <<EOF
-# Sub2API 配置文件
-#
-# 首次初始化由脚本生成。
-# 后续如果要修改服务端口、数据库、管理员或日志目录，直接编辑本文件即可。
-# 数据、日志、Redis 数据等均放在当前 sub2api 目录下。
-
-server:
-  # 建议仅监听本地，再通过 serv00 站点反代到此端口
-  host: "127.0.0.1"
-${server_port_line}
-  mode: "release"
-  frontend_url: "${esc_frontend_url}"
-  trusted_proxies: []
-
-run_mode: "simple"
-
-database:
-  host: "${esc_db_host}"
-  port: ${db_port}
-  user: "${esc_db_user}"
-  password: "${esc_db_password}"
-  dbname: "${esc_db_name}"
-  sslmode: "disable"
-
-redis:
-  host: "127.0.0.1"
-  port: ${redis_port}
-  password: "${esc_redis_password}"
-  db: 0
-
-jwt:
-  secret: "${esc_jwt_secret}"
-  expire_hour: 24
-
-totp:
-  encryption_key: "${esc_totp_key}"
-
-default:
-  admin_email: "${esc_admin_email}"
-  admin_password: "${esc_admin_password}"
-  user_concurrency: 5
-  user_balance: 0
-  api_key_prefix: "${esc_api_key_prefix}"
-  rate_multiplier: 1.0
-
-security:
-  url_allowlist:
-    enabled: false
-    allow_private_hosts: true
-    allow_insecure_http: true
-
-turnstile:
-  required: false
-
-log:
-  output:
-    to_stdout: true
-    to_file: true
-    file_path: "${esc_log_file}"
-
-pricing:
-  data_dir: "${esc_data_dir}"
-EOF
-}
-
-write_config_template() {
-    set_default_config_values
-    write_config_file \
-        "$CFG_SERVER_PORT" \
-        "$CFG_FRONTEND_URL" \
-        "$CFG_DB_HOST" \
-        "$CFG_DB_PORT" \
-        "$CFG_DB_USER" \
-        "$CFG_DB_PASSWORD" \
-        "$CFG_DB_NAME" \
-        "$CFG_REDIS_PORT" \
-        "$CFG_REDIS_PASSWORD" \
-        "$CFG_ADMIN_EMAIL" \
-        "$CFG_ADMIN_PASSWORD" \
-        "$CFG_API_KEY_PREFIX"
 }
 
 write_redis_file() {
@@ -320,43 +164,56 @@ appendonly no
 EOF
 }
 
-write_redis_template() {
-    set_default_config_values
-    write_redis_file "$CFG_REDIS_PORT" "$CFG_REDIS_PASSWORD"
-}
-
 interactive_first_setup() {
     collect_interactive_config
-    write_config_file \
-        "$CFG_SERVER_PORT" \
-        "$CFG_FRONTEND_URL" \
-        "$CFG_DB_HOST" \
-        "$CFG_DB_PORT" \
-        "$CFG_DB_USER" \
-        "$CFG_DB_PASSWORD" \
-        "$CFG_DB_NAME" \
-        "$CFG_REDIS_PORT" \
-        "$CFG_REDIS_PASSWORD" \
-        "$CFG_ADMIN_EMAIL" \
-        "$CFG_ADMIN_PASSWORD" \
-        "$CFG_API_KEY_PREFIX"
     write_redis_file "$CFG_REDIS_PORT" "$CFG_REDIS_PASSWORD"
-    log "首次运行：已根据交互内容生成 $CONFIG_FILE 和 $REDIS_CONF"
+    log "首次运行：已根据交互内容生成 $REDIS_CONF"
     return 0
 }
 
 ensure_initial_templates() {
-    if [ ! -f "$CONFIG_FILE" ] || [ ! -f "$REDIS_CONF" ]; then
+    if [ ! -f "$REDIS_CONF" ]; then
         if is_interactive; then
             interactive_first_setup
             return 0
         fi
 
-        log "当前为无交互环境，且缺少 $APP_DIR/config.yaml 或 $APP_DIR/redis.conf；跳过启动。请先手动执行 $SCRIPT_PATH 完成交互初始化"
+        log "当前为无交互环境，且缺少 $APP_DIR/redis.conf；跳过启动。请先手动执行 $SCRIPT_PATH 完成交互初始化"
         return 1
     fi
 
     return 0
+}
+
+needs_official_setup() {
+    [ ! -f "$CONFIG_FILE" ] || [ ! -f "$APP_DIR/.installed" ]
+}
+
+start_official_setup() {
+    if [ ! -x "$APP_BIN" ]; then
+        log "错误：未找到可执行文件 $APP_BIN"
+        return 1
+    fi
+
+    if check_port; then
+        log "端口 $PORT 已被占用，无法启动 Setup Wizard"
+        return 1
+    fi
+
+    export SERVER_HOST="127.0.0.1"
+    export SERVER_PORT="$PORT"
+
+    log "启动官方 Setup Wizard，监听 127.0.0.1:$PORT"
+    nohup "$APP_BIN" >/dev/null 2>&1 &
+    sleep 3
+
+    if check_port; then
+        log "官方 Setup Wizard 已启动，请通过反代域名或本机端口完成初始化"
+        return 0
+    fi
+
+    log "错误：官方 Setup Wizard 启动失败"
+    return 1
 }
 
 read_local_version() {
@@ -437,9 +294,10 @@ start_sub2api() {
         return 1
     fi
 
-    if [ ! -f "$CONFIG_FILE" ]; then
-        log "错误：未找到配置文件 $CONFIG_FILE"
-        return 1
+    if needs_official_setup; then
+        log "检测到尚未完成官方安装，转为启动 Setup Wizard"
+        start_official_setup
+        return $?
     fi
 
     if is_sub2api_running; then
@@ -599,6 +457,15 @@ show_status() {
 
 run_watchdog() {
     ensure_initial_templates || return 0
+
+    if needs_official_setup; then
+        log "检测到尚未完成官方安装，启动 Setup Wizard"
+        start_redis || return 1
+        start_official_setup || return 1
+        clean_logs
+        ensure_crontab
+        return 0
+    fi
 
     install_latest_release
     update_result=$?
