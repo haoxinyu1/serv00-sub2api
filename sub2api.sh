@@ -15,16 +15,15 @@ APP_NAME="sub2api"
 APP_BIN="$APP_DIR/$APP_NAME"
 CONFIG_FILE="$APP_DIR/config.yaml"
 REDIS_CONF="$APP_DIR/redis.conf"
-RUNTIME_DIR="$APP_DIR/sub2api_runtime"
-LOG_DIR="$RUNTIME_DIR/logs"
-DATA_DIR="$RUNTIME_DIR/data"
+LOG_DIR="$APP_DIR/logs"
+DATA_DIR="$APP_DIR/data"
 WATCH_LOG="$LOG_DIR/watchdog.log"
 APP_LOG="$LOG_DIR/sub2api.log"
 REDIS_LOG="$LOG_DIR/redis.log"
-VERSION_FILE="$RUNTIME_DIR/current_version.txt"
-DOWNLOAD_PATH="$RUNTIME_DIR/${APP_NAME}.tar.gz"
-EXTRACT_DIR="$RUNTIME_DIR/${APP_NAME}_extract"
-TEMP_JSON="$RUNTIME_DIR/${APP_NAME}_release.json"
+VERSION_FILE="$APP_DIR/current_version.txt"
+DOWNLOAD_PATH="$APP_DIR/${APP_NAME}.tar.gz"
+EXTRACT_DIR="$APP_DIR/${APP_NAME}_extract"
+TEMP_JSON="$APP_DIR/${APP_NAME}_release.json"
 CRON_ENTRY="*/2 * * * * nohup $SCRIPT_PATH >/dev/null 2>&1"
 
 GITHUB_PROJECT='KiritoXDone/Sub2API-Freebsd'
@@ -34,9 +33,9 @@ DB_PORT_DEFAULT='5432'
 DB_USER_DEFAULT=''
 DB_NAME_DEFAULT=''
 REDIS_PORT='2345'
-REDIS_DATA_DIR="$RUNTIME_DIR/redis"
+REDIS_DATA_DIR="$APP_DIR/redis"
 
-mkdir -p "$RUNTIME_DIR" "$LOG_DIR" "$DATA_DIR" "$REDIS_DATA_DIR"
+mkdir -p "$LOG_DIR" "$DATA_DIR" "$REDIS_DATA_DIR"
 cd "$APP_DIR" || exit 1
 
 log() {
@@ -72,18 +71,9 @@ prompt_value() {
     prompt_text="$1"
     default_value="$2"
     target_var="$3"
-    secret_mode="$4"
 
-    if [ "$secret_mode" = "secret" ]; then
-        printf "%s [%s]: " "$prompt_text" "$default_value" > /dev/tty
-        stty -echo < /dev/tty
-        IFS= read -r input_value < /dev/tty
-        stty echo < /dev/tty
-        printf "\n" > /dev/tty
-    else
-        printf "%s [%s]: " "$prompt_text" "$default_value" > /dev/tty
-        IFS= read -r input_value < /dev/tty
-    fi
+    printf "%s [%s]: " "$prompt_text" "$default_value" > /dev/tty
+    IFS= read -r input_value < /dev/tty
 
     if [ -z "$input_value" ]; then
         input_value="$default_value"
@@ -92,14 +82,29 @@ prompt_value() {
     eval "$target_var=\"\$input_value\""
 }
 
+prompt_required_value() {
+    prompt_text="$1"
+    default_value="$2"
+    target_var="$3"
+
+    while :; do
+        prompt_value "$prompt_text" "$default_value" "$target_var"
+        eval "current_value=\${$target_var}"
+        if [ -n "$current_value" ]; then
+            break
+        fi
+        echo "该项不能为空，请重新输入。" > /dev/tty
+    done
+}
+
 set_default_config_values() {
-    CFG_SERVER_PORT="$PORT"
+    CFG_SERVER_PORT=""
     CFG_FRONTEND_URL="https://your-domain.example"
     CFG_DB_HOST="$DB_HOST_DEFAULT"
     CFG_DB_PORT="$DB_PORT_DEFAULT"
     CFG_DB_USER="$DB_USER_DEFAULT"
     CFG_DB_PASSWORD="please_replace_with_your_postgresql_password"
-    CFG_DB_NAME="$DB_NAME_DEFAULT"
+    CFG_DB_NAME="$CFG_DB_USER"
     CFG_REDIS_PORT="$REDIS_PORT"
     CFG_REDIS_PASSWORD="please_replace_with_your_redis_password"
     CFG_ADMIN_EMAIL="admin@example.com"
@@ -112,24 +117,31 @@ collect_interactive_config() {
 
     echo "" > /dev/tty
     echo "===== Sub2API 首次初始化 =====" > /dev/tty
-    echo "直接回车使用默认值。敏感项输入时不会回显。" > /dev/tty
+    echo "直接回车使用默认值。密码输入将明文显示，便于核对。" > /dev/tty
     echo "" > /dev/tty
 
-    prompt_value "Sub2API 服务端口" "$CFG_SERVER_PORT" CFG_SERVER_PORT
+    prompt_required_value "Sub2API 服务端口" "$CFG_SERVER_PORT" CFG_SERVER_PORT
     prompt_value "前端访问地址 frontend_url" "$CFG_FRONTEND_URL" CFG_FRONTEND_URL
     prompt_value "PostgreSQL 主机 DB_HOST" "$CFG_DB_HOST" CFG_DB_HOST
     prompt_value "PostgreSQL 端口" "$CFG_DB_PORT" CFG_DB_PORT
     prompt_value "PostgreSQL 用户名 DB_USER" "$CFG_DB_USER" CFG_DB_USER
-    prompt_value "PostgreSQL 密码" "$CFG_DB_PASSWORD" CFG_DB_PASSWORD secret
+    if [ -z "$CFG_DB_NAME" ] && [ -n "$CFG_DB_USER" ]; then
+        CFG_DB_NAME="$CFG_DB_USER"
+    fi
+    prompt_value "PostgreSQL 密码" "$CFG_DB_PASSWORD" CFG_DB_PASSWORD
     prompt_value "PostgreSQL 数据库名" "$CFG_DB_NAME" CFG_DB_NAME
     prompt_value "Redis 端口" "$CFG_REDIS_PORT" CFG_REDIS_PORT
-    prompt_value "Redis 密码" "$CFG_REDIS_PASSWORD" CFG_REDIS_PASSWORD secret
+    prompt_value "Redis 密码" "$CFG_REDIS_PASSWORD" CFG_REDIS_PASSWORD
     prompt_value "管理员邮箱 admin_email" "$CFG_ADMIN_EMAIL" CFG_ADMIN_EMAIL
-    prompt_value "管理员密码 admin_password" "$CFG_ADMIN_PASSWORD" CFG_ADMIN_PASSWORD secret
+    prompt_value "管理员密码 admin_password" "$CFG_ADMIN_PASSWORD" CFG_ADMIN_PASSWORD
     prompt_value "API Key 前缀 api_key_prefix" "$CFG_API_KEY_PREFIX" CFG_API_KEY_PREFIX
 
     PORT="$CFG_SERVER_PORT"
     REDIS_PORT="$CFG_REDIS_PORT"
+}
+
+yaml_escape() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
 write_config_file() {
@@ -157,50 +169,70 @@ write_config_file() {
         totp_key="please_replace_with_another_openssl_rand_hex_32"
     fi
 
+    esc_frontend_url=$(yaml_escape "$frontend_url")
+    esc_db_host=$(yaml_escape "$db_host")
+    esc_db_user=$(yaml_escape "$db_user")
+    esc_db_password=$(yaml_escape "$db_password")
+    esc_db_name=$(yaml_escape "$db_name")
+    esc_redis_password=$(yaml_escape "$redis_password")
+    esc_admin_email=$(yaml_escape "$admin_email")
+    esc_admin_password=$(yaml_escape "$admin_password")
+    esc_api_key_prefix=$(yaml_escape "$api_key_prefix")
+    esc_jwt_secret=$(yaml_escape "$jwt_secret")
+    esc_totp_key=$(yaml_escape "$totp_key")
+    esc_log_file=$(yaml_escape "${LOG_DIR}/sub2api-app.log")
+    esc_data_dir=$(yaml_escape "${DATA_DIR}")
+
+    if [ -n "$server_port" ]; then
+        server_port_line="  port: ${server_port}"
+    else
+        server_port_line="  # port: 6789"
+    fi
+
     cat > "$CONFIG_FILE" <<EOF
 # Sub2API 配置文件
 #
 # 首次初始化由脚本生成。
 # 后续如果要修改服务端口、数据库、管理员或日志目录，直接编辑本文件即可。
-# 运行期文件统一放在 ${RUNTIME_DIR}。
+# 数据、日志、Redis 数据等均放在当前 sub2api 目录下。
 
 server:
   # 建议仅监听本地，再通过 serv00 站点反代到此端口
   host: "127.0.0.1"
-  port: ${server_port}
+${server_port_line}
   mode: "release"
-  frontend_url: "${frontend_url}"
+  frontend_url: "${esc_frontend_url}"
   trusted_proxies: []
 
 run_mode: "simple"
 
 database:
-  host: "${db_host}"
+  host: "${esc_db_host}"
   port: ${db_port}
-  user: "${db_user}"
-  password: "${db_password}"
-  dbname: "${db_name}"
+  user: "${esc_db_user}"
+  password: "${esc_db_password}"
+  dbname: "${esc_db_name}"
   sslmode: "disable"
 
 redis:
   host: "127.0.0.1"
   port: ${redis_port}
-  password: "${redis_password}"
+  password: "${esc_redis_password}"
   db: 0
 
 jwt:
-  secret: "${jwt_secret}"
+  secret: "${esc_jwt_secret}"
   expire_hour: 24
 
 totp:
-  encryption_key: "${totp_key}"
+  encryption_key: "${esc_totp_key}"
 
 default:
-  admin_email: "${admin_email}"
-  admin_password: "${admin_password}"
+  admin_email: "${esc_admin_email}"
+  admin_password: "${esc_admin_password}"
   user_concurrency: 5
   user_balance: 0
-  api_key_prefix: "${api_key_prefix}"
+  api_key_prefix: "${esc_api_key_prefix}"
   rate_multiplier: 1.0
 
 security:
@@ -216,10 +248,10 @@ log:
   output:
     to_stdout: true
     to_file: true
-    file_path: "${LOG_DIR}/sub2api-app.log"
+    file_path: "${esc_log_file}"
 
 pricing:
-  data_dir: "${DATA_DIR}"
+  data_dir: "${esc_data_dir}"
 EOF
 }
 
@@ -246,6 +278,8 @@ write_redis_file() {
 
     mkdir -p "$REDIS_DATA_DIR"
 
+    esc_redis_password=$(yaml_escape "$redis_password")
+
     cat > "$REDIS_CONF" <<EOF
 # Redis 配置文件
 #
@@ -260,7 +294,7 @@ bind 0.0.0.0
 port ${redis_port}
 
 # 建议开启密码保护，并与 config.yaml 中的 redis.password 保持一致
-requirepass ${redis_password}
+requirepass ${esc_redis_password}
 
 # 允许远程访问时通常需要关闭保护模式，否则外部可能连不上
 protected-mode no
@@ -306,29 +340,13 @@ interactive_first_setup() {
 }
 
 ensure_initial_templates() {
-    created_any=0
-
     if [ ! -f "$CONFIG_FILE" ] || [ ! -f "$REDIS_CONF" ]; then
         if is_interactive; then
             interactive_first_setup
             return 0
         fi
 
-        if [ ! -f "$CONFIG_FILE" ]; then
-            write_config_template
-            log "无交互环境：已生成 Sub2API 配置范本 $CONFIG_FILE"
-            created_any=1
-        fi
-
-        if [ ! -f "$REDIS_CONF" ]; then
-            write_redis_template
-            log "无交互环境：已生成 Redis 配置范本 $REDIS_CONF"
-            created_any=1
-        fi
-    fi
-
-    if [ "$created_any" -eq 1 ]; then
-        log "当前为无交互环境，请先补全配置文件后再重新执行脚本"
+        log "当前为无交互环境，且缺少 config.yaml 或 redis.conf；跳过启动。请先手动执行 ./sub2api.sh 完成交互初始化"
         return 1
     fi
 
