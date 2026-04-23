@@ -19,7 +19,6 @@ REDIS_CONF="$APP_DIR/redis.conf"
 LOG_DIR="$APP_DIR/logs"
 DATA_DIR="$APP_DIR/data"
 WATCH_LOG="$LOG_DIR/watchdog.log"
-APP_LOG="$LOG_DIR/sub2api.log"
 REDIS_LOG="$LOG_DIR/redis.log"
 VERSION_FILE="$APP_DIR/current_version.txt"
 DOWNLOAD_PATH="$APP_DIR/${APP_NAME}.tar.gz"
@@ -449,7 +448,7 @@ start_sub2api() {
     fi
 
     log "启动 $APP_NAME"
-    nohup "$APP_BIN" >> "$APP_LOG" 2>&1 &
+    nohup "$APP_BIN" >/dev/null 2>&1 &
     sleep 3
 
     if is_sub2api_running || check_port; then
@@ -562,9 +561,6 @@ check_running_and_restart_if_needed() {
 clean_logs() {
     if [ -f "$WATCH_LOG" ]; then
         tail -n 10000 "$WATCH_LOG" > "$WATCH_LOG.tmp" && mv "$WATCH_LOG.tmp" "$WATCH_LOG"
-    fi
-    if [ -f "$APP_LOG" ]; then
-        tail -n 10000 "$APP_LOG" > "$APP_LOG.tmp" && mv "$APP_LOG.tmp" "$APP_LOG"
     fi
     if [ -f "$REDIS_LOG" ]; then
         tail -n 10000 "$REDIS_LOG" > "$REDIS_LOG.tmp" && mv "$REDIS_LOG.tmp" "$REDIS_LOG"
