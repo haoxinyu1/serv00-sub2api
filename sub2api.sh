@@ -10,7 +10,8 @@ if [ -z "$SCRIPT_PATH" ]; then
     esac
 fi
 
-APP_DIR=$(dirname "$SCRIPT_PATH")
+SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
+APP_DIR="$SCRIPT_DIR/sub2api"
 APP_NAME="sub2api"
 APP_BIN="$APP_DIR/$APP_NAME"
 CONFIG_FILE="$APP_DIR/config.yaml"
@@ -35,6 +36,7 @@ DB_NAME_DEFAULT=''
 REDIS_PORT='2345'
 REDIS_DATA_DIR="$APP_DIR/redis"
 
+mkdir -p "$APP_DIR"
 mkdir -p "$LOG_DIR" "$DATA_DIR" "$REDIS_DATA_DIR"
 cd "$APP_DIR" || exit 1
 
@@ -141,6 +143,10 @@ collect_interactive_config() {
 }
 
 yaml_escape() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+redis_escape() {
     printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
@@ -278,7 +284,7 @@ write_redis_file() {
 
     mkdir -p "$REDIS_DATA_DIR"
 
-    esc_redis_password=$(yaml_escape "$redis_password")
+    esc_redis_password=$(redis_escape "$redis_password")
 
     cat > "$REDIS_CONF" <<EOF
 # Redis 配置文件
@@ -294,7 +300,7 @@ bind 0.0.0.0
 port ${redis_port}
 
 # 建议开启密码保护，并与 config.yaml 中的 redis.password 保持一致
-requirepass ${esc_redis_password}
+requirepass "${esc_redis_password}"
 
 # 允许远程访问时通常需要关闭保护模式，否则外部可能连不上
 protected-mode no
@@ -346,7 +352,7 @@ ensure_initial_templates() {
             return 0
         fi
 
-        log "当前为无交互环境，且缺少 config.yaml 或 redis.conf；跳过启动。请先手动执行 ./sub2api.sh 完成交互初始化"
+        log "当前为无交互环境，且缺少 $APP_DIR/config.yaml 或 $APP_DIR/redis.conf；跳过启动。请先手动执行 $SCRIPT_PATH 完成交互初始化"
         return 1
     fi
 
