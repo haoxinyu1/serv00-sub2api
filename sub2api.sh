@@ -29,8 +29,8 @@ TEMP_JSON="$APP_DIR/${APP_NAME}_release.json"
 CRON_ENTRY="*/2 * * * * nohup $SCRIPT_PATH >/dev/null 2>&1"
 
 GITHUB_PROJECT='KiritoXDone/Sub2API-Freebsd'
-PORT='6789'
-REDIS_PORT='2345'
+PORT=''
+REDIS_PORT=''
 
 mkdir -p "$APP_DIR" "$LOG_DIR" "$DATA_DIR" "$REDIS_DATA_DIR"
 cd "$APP_DIR" || exit 1
