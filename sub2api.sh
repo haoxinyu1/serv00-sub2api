@@ -18,9 +18,11 @@ CONFIG_FILE="$APP_DIR/config.yaml"
 REDIS_CONF="$APP_DIR/redis.conf"
 LOG_DIR="$APP_DIR/logs"
 DATA_DIR="$APP_DIR/data"
+REDIS_DATA_DIR="$APP_DIR/redis"
 WATCH_LOG="$LOG_DIR/watchdog.log"
 REDIS_LOG="$LOG_DIR/redis.log"
 VERSION_FILE="$APP_DIR/current_version.txt"
+DESIRED_PORT_FILE="$APP_DIR/desired_server_port.txt"
 DOWNLOAD_PATH="$APP_DIR/${APP_NAME}.tar.gz"
 EXTRACT_DIR="$APP_DIR/${APP_NAME}_extract"
 TEMP_JSON="$APP_DIR/${APP_NAME}_release.json"
@@ -29,10 +31,8 @@ CRON_ENTRY="*/2 * * * * nohup $SCRIPT_PATH >/dev/null 2>&1"
 GITHUB_PROJECT='KiritoXDone/Sub2API-Freebsd'
 PORT='6789'
 REDIS_PORT='2345'
-REDIS_DATA_DIR="$APP_DIR/redis"
 
-mkdir -p "$APP_DIR"
-mkdir -p "$LOG_DIR" "$DATA_DIR" "$REDIS_DATA_DIR"
+mkdir -p "$APP_DIR" "$LOG_DIR" "$DATA_DIR" "$REDIS_DATA_DIR"
 cd "$APP_DIR" || exit 1
 
 log() {
@@ -46,20 +46,6 @@ cleanup_temp_files() {
     rm -rf "$EXTRACT_DIR"
 }
 
-generate_hex_secret() {
-    if command -v openssl >/dev/null 2>&1; then
-        openssl rand -hex 32 2>/dev/null
-        return 0
-    fi
-
-    if command -v dd >/dev/null 2>&1 && [ -r /dev/urandom ]; then
-        dd if=/dev/urandom bs=32 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n'
-        return 0
-    fi
-
-    date +%s | sha256 2>/dev/null | awk '{print $1}'
-}
-
 is_interactive() {
     [ -e /dev/tty ] && [ -r /dev/tty ] && [ -w /dev/tty ]
 }
@@ -71,11 +57,9 @@ prompt_value() {
 
     printf "%s [%s]: " "$prompt_text" "$default_value" > /dev/tty
     IFS= read -r input_value < /dev/tty
-
     if [ -z "$input_value" ]; then
         input_value="$default_value"
     fi
-
     eval "$target_var=\"\$input_value\""
 }
 
@@ -94,107 +78,96 @@ prompt_required_value() {
     done
 }
 
-set_default_config_values() {
-    CFG_SERVER_PORT=""
-    CFG_REDIS_PORT="$REDIS_PORT"
-    CFG_REDIS_PASSWORD="please_replace_with_your_redis_password"
-}
-
-collect_interactive_config() {
-    set_default_config_values
-
-    echo "" > /dev/tty
-    echo "===== Sub2API 首次初始化 =====" > /dev/tty
-    echo "本脚本只准备 Redis 和运行环境，不预生成 config.yaml。" > /dev/tty
-    echo "随后会按你指定的端口启动官方 Setup Wizard，请在浏览器中完成数据库、前端地址和管理员初始化。" > /dev/tty
-    echo "" > /dev/tty
-
-    prompt_required_value "Sub2API 服务端口" "$CFG_SERVER_PORT" CFG_SERVER_PORT
-    prompt_value "Redis 端口" "$CFG_REDIS_PORT" CFG_REDIS_PORT
-    prompt_value "Redis 密码" "$CFG_REDIS_PASSWORD" CFG_REDIS_PASSWORD
-
-    PORT="$CFG_SERVER_PORT"
-    REDIS_PORT="$CFG_REDIS_PORT"
-}
-
 redis_escape() {
     printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
-write_redis_file() {
-    redis_port="$1"
-    redis_password="$2"
+extract_yaml_scalar() {
+    key_path="$1"
+    file_path="$2"
 
-    mkdir -p "$REDIS_DATA_DIR"
+    awk -v target="$key_path" '
+        function trim(s) {
+            gsub(/^[ \t\r\n]+|[ \t\r\n]+$/, "", s)
+            return s
+        }
+        {
+            raw=$0
+            indent=match(raw, /[^ ]/) - 1
+            if (indent < 0) indent = 0
+            line=trim(raw)
+            if (line == "" || line ~ /^#/) next
+            if (line !~ /:/) next
 
-    esc_redis_password=$(redis_escape "$redis_password")
+            split(line, kv, ":")
+            value=substr(line, index(line, ":") + 1)
+            value=trim(value)
 
-    cat > "$REDIS_CONF" <<EOF
-# Redis 配置文件
-#
-# 首次初始化由脚本生成。
-# 如需修改端口或密码，请同步更新 config.yaml 中的 redis 配置。
+            level=int(indent / 2)
+            key=trim(kv[1])
+            path[level]=key
+            for (i in path) {
+                if (i > level) delete path[i]
+            }
 
-# 监听地址
-# 默认仅监听本机，更适合当前 serv00 + 反代部署方式
-# 如果你后续确实需要远程连 Redis，再手动改成 0.0.0.0
-bind 127.0.0.1
+            current=path[0]
+            for (i=1; i<=level; i++) {
+                if (path[i] != "") current=current "." path[i]
+            }
 
-# Redis 监听端口
-port ${redis_port}
-
-# 建议开启密码保护，并与 config.yaml 中的 redis.password 保持一致
-requirepass "${esc_redis_password}"
-
-# 允许远程访问时通常需要关闭保护模式，否则外部可能连不上
-protected-mode no
-
-# 允许后台运行，方便脚本用 nohup 拉起
-daemonize yes
-
-# 日志级别
-loglevel notice
-
-# 数据目录，必须事先存在且当前用户可写
-dir ${REDIS_DATA_DIR}
-
-# 最小化持久化配置
-save ""
-appendonly no
-EOF
+            if (current == target && value != "") {
+                if (value ~ /^".*"$/) value=substr(value, 2, length(value)-2)
+                if (value ~ /^\047.*\047$/) value=substr(value, 2, length(value)-2)
+                print value
+                exit
+            }
+        }
+    ' "$file_path"
 }
 
-interactive_first_setup() {
-    collect_interactive_config
-    write_redis_file "$CFG_REDIS_PORT" "$CFG_REDIS_PASSWORD"
-    log "首次运行：已根据交互内容生成 $REDIS_CONF"
-    return 0
-}
-
-ensure_initial_templates() {
-    if [ ! -f "$REDIS_CONF" ]; then
-        if is_interactive; then
-            interactive_first_setup
+read_desired_port() {
+    if [ -f "$DESIRED_PORT_FILE" ]; then
+        desired_port=$(tr -d ' \r\n' < "$DESIRED_PORT_FILE")
+        if [ -n "$desired_port" ]; then
+            printf '%s' "$desired_port"
             return 0
         fi
+    fi
+    printf '%s' "$PORT"
+}
 
-        log "当前为无交互环境，且缺少 $APP_DIR/redis.conf；跳过启动。请先手动执行 $SCRIPT_PATH 完成交互初始化"
+write_desired_port() {
+    printf '%s\n' "$1" > "$DESIRED_PORT_FILE"
+}
+
+sync_runtime_ports() {
+    desired_port=$(read_desired_port)
+    if [ -n "$desired_port" ]; then
+        PORT="$desired_port"
+    fi
+
+    if [ -f "$CONFIG_FILE" ]; then
+        config_redis_port=$(extract_yaml_scalar "redis.port" "$CONFIG_FILE")
+        if [ -n "$config_redis_port" ]; then
+            REDIS_PORT="$config_redis_port"
+        fi
+    fi
+}
+
+validate_runtime_port() {
+    case "$PORT" in
+        ''|*[!0-9]*)
+            log "错误：server.port 不是有效数字：$PORT"
+            return 1
+            ;;
+    esac
+
+    if [ "$PORT" -lt 1024 ]; then
+        log "错误：当前配置的 server.port=$PORT，小于 1024。serv00 普通用户无权监听该端口，请改成 1024 以上端口，例如 6789"
         return 1
     fi
 
     return 0
-}
-
-needs_official_setup() {
-    [ ! -f "$CONFIG_FILE" ] || [ ! -f "$APP_DIR/.installed" ]
-}
-
-read_local_version() {
-    if [ -f "$VERSION_FILE" ]; then
-        cat "$VERSION_FILE"
-    else
-        echo ""
-    fi
 }
 
 check_port() {
@@ -213,6 +186,43 @@ is_redis_running() {
     pgrep -f "redis-server.*${REDIS_CONF}" >/dev/null 2>&1 || check_redis_port
 }
 
+is_bootstrap_initialized() {
+    [ -f "$REDIS_CONF" ] && [ -f "$DESIRED_PORT_FILE" ]
+}
+
+is_installed() {
+    [ -f "$CONFIG_FILE" ] && [ -f "$APP_DIR/.installed" ]
+}
+
+write_redis_conf() {
+    redis_port="$1"
+    redis_password="$2"
+    esc_redis_password=$(redis_escape "$redis_password")
+
+    cat > "$REDIS_CONF" <<EOF
+# Redis 配置文件
+bind 127.0.0.1
+port ${redis_port}
+requirepass "${esc_redis_password}"
+protected-mode no
+daemonize yes
+loglevel notice
+dir ${REDIS_DATA_DIR}
+save ""
+appendonly no
+EOF
+}
+
+ensure_crontab() {
+    crontab -l 2>/dev/null | grep -qF "$CRON_ENTRY"
+    if [ $? -ne 0 ]; then
+        (crontab -l 2>/dev/null; echo "$CRON_ENTRY") | crontab -
+        log "已写入 crontab 定时巡检任务"
+    else
+        log "crontab 定时巡检任务已存在"
+    fi
+}
+
 stop_sub2api() {
     if is_sub2api_running; then
         log "停止 $APP_NAME 进程"
@@ -220,18 +230,6 @@ stop_sub2api() {
         sleep 2
         if is_sub2api_running; then
             pkill -9 -f "$APP_BIN" >/dev/null 2>&1 || true
-            sleep 1
-        fi
-    fi
-}
-
-stop_redis() {
-    if is_redis_running; then
-        log "停止 Redis 进程"
-        pkill -f "redis-server.*${REDIS_CONF}" >/dev/null 2>&1 || true
-        sleep 2
-        if is_redis_running; then
-            pkill -9 -f "redis-server.*${REDIS_CONF}" >/dev/null 2>&1 || true
             sleep 1
         fi
     fi
@@ -261,109 +259,40 @@ start_redis() {
     return 1
 }
 
-start_sub2api() {
-    if [ ! -x "$APP_BIN" ]; then
-        log "本地未找到 $APP_NAME，先下载最新版本"
-        install_latest_release
-        download_result=$?
-        if [ "$download_result" -ne 0 ] && [ "$download_result" -ne 2 ]; then
-            log "错误：下载 $APP_NAME 失败"
-            return 1
-        fi
+install_latest_release() {
+    local_version=""
+    if [ -f "$VERSION_FILE" ]; then
+        local_version=$(tr -d ' \r\n' < "$VERSION_FILE")
     fi
 
-    if [ ! -x "$APP_BIN" ]; then
-        log "错误：未找到可执行文件 $APP_BIN"
-        return 1
-    fi
-
-    if needs_official_setup; then
-        if check_port; then
-            log "端口 $PORT 已被占用，无法启动首次安装向导"
-            return 1
-        fi
-
-        export SERVER_HOST="127.0.0.1"
-        export SERVER_PORT="$PORT"
-
-        log "检测到尚未完成官方安装，直接启动 $APP_NAME 进入 Setup Wizard"
-        nohup "$APP_BIN" >/dev/null 2>&1 &
-        sleep 3
-
-        if check_port; then
-            log "Setup Wizard 已启动，请通过反代域名或本机端口完成初始化"
-            return 0
-        fi
-
-        log "错误：首次安装向导启动失败"
-        return 1
-    fi
-
-    if is_sub2api_running; then
-        log "$APP_NAME 已在运行"
-        return 0
-    fi
-
-    log "启动 $APP_NAME"
-    nohup "$APP_BIN" >/dev/null 2>&1 &
-    sleep 3
-
-    if is_sub2api_running || check_port; then
-        log "$APP_NAME 启动成功"
-        return 0
-    fi
-
-    log "错误：$APP_NAME 启动失败"
-    return 1
-}
-
-restart_services() {
-    stop_sub2api
-    stop_redis
-
-    start_redis || return 1
-    start_sub2api || return 1
-    return 0
-}
-
-fetch_release_info() {
-    API_URL="https://api.github.com/repos/${GITHUB_PROJECT}/releases/latest"
-
+    api_url="https://api.github.com/repos/${GITHUB_PROJECT}/releases/latest"
     log "检查 GitHub 最新版本"
-    if ! curl -fsSL "$API_URL" -o "$TEMP_JSON"; then
+    if ! curl -fsSL "$api_url" -o "$TEMP_JSON"; then
         log "错误：获取发布信息失败"
         return 1
     fi
 
-    LATEST_TAG=$(jq -r '.tag_name' "$TEMP_JSON")
-    ASSET_URL=$(jq -r '.assets[] | select(.name | test("^sub2api_.*_freebsd_amd64\\.tar\\.gz$")) | .browser_download_url' "$TEMP_JSON" | head -n 1)
+    latest_tag=$(jq -r '.tag_name' "$TEMP_JSON")
+    asset_url=$(jq -r '.assets[] | select(.name | test("^sub2api_.*_freebsd_amd64\\.tar\\.gz$")) | .browser_download_url' "$TEMP_JSON" | head -n 1)
 
-    if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" = "null" ]; then
+    if [ -z "$latest_tag" ] || [ "$latest_tag" = "null" ]; then
         log "错误：无法解析最新版本号"
         return 1
     fi
 
-    if [ -z "$ASSET_URL" ] || [ "$ASSET_URL" = "null" ]; then
+    if [ -z "$asset_url" ] || [ "$asset_url" = "null" ]; then
         log "错误：未找到 freebsd_amd64 安装包"
         return 1
     fi
 
-    return 0
-}
-
-install_latest_release() {
-    LOCAL_VERSION=$(read_local_version)
-
-    fetch_release_info || return 1
-
-    if [ "$LATEST_TAG" = "$LOCAL_VERSION" ] && [ -x "$APP_BIN" ]; then
-        log "当前已是最新版本：$LATEST_TAG"
+    if [ "$latest_tag" = "$local_version" ] && [ -x "$APP_BIN" ]; then
+        log "当前已是最新版本：$latest_tag"
         return 2
     fi
 
-    log "发现新版本：$LATEST_TAG"
+    log "发现新版本：$latest_tag"
     log "下载更新包"
-    if ! curl -fL "$ASSET_URL" -o "$DOWNLOAD_PATH"; then
+    if ! curl -fL "$asset_url" -o "$DOWNLOAD_PATH"; then
         log "错误：下载更新包失败"
         cleanup_temp_files
         return 1
@@ -393,26 +322,234 @@ install_latest_release() {
         return 1
     fi
 
-    echo "$LATEST_TAG" > "$VERSION_FILE"
+    printf '%s\n' "$latest_tag" > "$VERSION_FILE"
     cleanup_temp_files
-    log "更新完成：$LATEST_TAG"
+    log "更新完成：$latest_tag"
     return 0
 }
 
-check_running_and_restart_if_needed() {
-    if check_port && is_sub2api_running; then
-        log "$APP_NAME 运行正常"
-        if is_redis_running; then
-            log "Redis 运行正常"
+wait_for_sub2api_start() {
+    started=0
+    i=0
+    while [ "$i" -lt 10 ]; do
+        sleep 1
+        if is_sub2api_running || check_port; then
+            started=1
+            break
+        fi
+        i=$((i + 1))
+    done
+
+    if [ "$started" -eq 1 ]; then
+        return 0
+    fi
+    return 1
+}
+
+start_sub2api() {
+    sync_runtime_ports
+
+    if [ ! -x "$APP_BIN" ]; then
+        log "本地未找到 $APP_NAME，先下载最新版本"
+        install_latest_release
+        update_result=$?
+        if [ "$update_result" -ne 0 ] && [ "$update_result" -ne 2 ]; then
+            log "错误：下载 $APP_NAME 失败"
+            return 1
+        fi
+    fi
+
+    if [ ! -x "$APP_BIN" ]; then
+        log "错误：未找到可执行文件 $APP_BIN"
+        return 1
+    fi
+
+    if is_sub2api_running; then
+        log "$APP_NAME 已在运行"
+        return 0
+    fi
+
+    export SERVER_HOST="127.0.0.1"
+    export SERVER_PORT="$PORT"
+
+    if is_installed; then
+        validate_runtime_port || return 1
+        log "启动 $APP_NAME"
+    else
+        log "检测到尚未完成官方安装，直接启动 $APP_NAME"
+    fi
+
+    nohup "$APP_BIN" >> "$WATCH_LOG" 2>&1 &
+
+    if wait_for_sub2api_start; then
+        if is_installed; then
+            log "$APP_NAME 启动成功"
         else
-            log "Redis 未运行，执行补启动"
-            start_redis || return 1
+            log "$APP_NAME 已启动，请通过反代域名或本机端口继续安装"
         fi
         return 0
     fi
 
-    log "检测到服务异常，执行重启"
-    restart_services
+    log "错误：$APP_NAME 启动失败"
+    return 1
+}
+
+restart_sub2api() {
+    stop_sub2api
+    start_sub2api
+}
+
+set_yaml_server_port() {
+    target_port="$1"
+    temp_file="$CONFIG_FILE.tmp"
+
+    awk -v target_port="$target_port" '
+        function spaces(n, out, i) {
+            out=""
+            for (i=0; i<n; i++) out=out " "
+            return out
+        }
+        function trim(s) {
+            gsub(/^[ \t\r\n]+|[ \t\r\n]+$/, "", s)
+            return s
+        }
+        BEGIN {
+            in_server=0
+            server_indent=-1
+            port_written=0
+        }
+        {
+            raw=$0
+            indent=match(raw, /[^ ]/) - 1
+            if (indent < 0) indent = 0
+            line=trim(raw)
+
+            if (line ~ /^server:[[:space:]]*$/) {
+                in_server=1
+                server_indent=indent
+                print raw
+                next
+            }
+
+            if (in_server && line != "" && indent <= server_indent) {
+                if (!port_written) {
+                    print spaces(server_indent + 2) "port: " target_port
+                    port_written=1
+                }
+                in_server=0
+            }
+
+            if (in_server && line ~ /^port:[[:space:]]*/) {
+                print spaces(indent) "port: " target_port
+                port_written=1
+                next
+            }
+
+            print raw
+        }
+        END {
+            if (in_server && !port_written) {
+                print spaces(server_indent + 2) "port: " target_port
+            }
+        }
+    ' "$CONFIG_FILE" > "$temp_file" && mv "$temp_file" "$CONFIG_FILE"
+}
+
+ensure_log_config() {
+    if grep -q '^log:' "$CONFIG_FILE"; then
+        return 1
+    fi
+
+    cat >> "$CONFIG_FILE" <<EOF
+
+log:
+  output:
+    to_stdout: true
+    to_file: true
+    file_path: "$APP_DIR/logs/sub2api-app.log"
+EOF
+    return 0
+}
+
+ensure_pricing_config() {
+    if grep -q '^pricing:' "$CONFIG_FILE"; then
+        return 1
+    fi
+
+    cat >> "$CONFIG_FILE" <<EOF
+
+pricing:
+  data_dir: "$APP_DIR/data"
+EOF
+    return 0
+}
+
+fix_config_if_needed() {
+    if [ ! -f "$CONFIG_FILE" ]; then
+        return 0
+    fi
+
+    changed=0
+    desired_port=$(read_desired_port)
+    current_port=$(extract_yaml_scalar "server.port" "$CONFIG_FILE")
+
+    if [ -n "$desired_port" ] && [ "$current_port" != "$desired_port" ]; then
+        set_yaml_server_port "$desired_port"
+        log "已自动修正 config.yaml 中的 server.port：${current_port:-<empty>} -> $desired_port"
+        PORT="$desired_port"
+        changed=1
+    fi
+
+    ensure_log_config
+    if [ $? -eq 0 ]; then
+        log "已自动补全 config.yaml 中的日志输出配置"
+        changed=1
+    fi
+
+    ensure_pricing_config
+    if [ $? -eq 0 ]; then
+        log "已自动补全 config.yaml 中的 pricing.data_dir 配置"
+        changed=1
+    fi
+
+    if [ "$changed" -eq 1 ]; then
+        return 1
+    fi
+
+    return 0
+}
+
+manual_initialize() {
+    if ! is_interactive; then
+        log "当前缺少初始化文件且无交互终端，请先手动执行 $SCRIPT_PATH"
+        return 1
+    fi
+
+    echo "" > /dev/tty
+    echo "===== Sub2API 首次初始化 =====" > /dev/tty
+    echo "将记录程序端口，生成 Redis 配置，启动 Redis，下载程序并直接启动。" > /dev/tty
+    echo "程序启动后如未安装，会自动进入官方安装页面。" > /dev/tty
+    echo "" > /dev/tty
+
+    prompt_required_value "Sub2API 服务端口" "" CFG_SERVER_PORT
+    prompt_value "Redis 端口" "$REDIS_PORT" CFG_REDIS_PORT
+    prompt_value "Redis 密码" "please_replace_with_your_redis_password" CFG_REDIS_PASSWORD
+
+    PORT="$CFG_SERVER_PORT"
+    REDIS_PORT="$CFG_REDIS_PORT"
+    write_desired_port "$CFG_SERVER_PORT"
+    write_redis_conf "$CFG_REDIS_PORT" "$CFG_REDIS_PASSWORD"
+    log "首次运行：已根据交互内容生成 $REDIS_CONF"
+
+    start_redis || return 1
+    install_latest_release
+    install_result=$?
+    if [ "$install_result" -ne 0 ] && [ "$install_result" -ne 2 ]; then
+        return 1
+    fi
+    start_sub2api || return 1
+    ensure_crontab
+    return 0
 }
 
 clean_logs() {
@@ -424,17 +561,8 @@ clean_logs() {
     fi
 }
 
-ensure_crontab() {
-    crontab -l 2>/dev/null | grep -qF "$CRON_ENTRY"
-    if [ $? -ne 0 ]; then
-        (crontab -l 2>/dev/null; echo "$CRON_ENTRY") | crontab -
-        log "已写入 crontab 定时巡检任务"
-    else
-        log "crontab 定时巡检任务已存在"
-    fi
-}
-
 show_status() {
+    sync_runtime_ports
     if is_sub2api_running; then
         log "$APP_NAME 进程存在"
     else
@@ -455,29 +583,53 @@ show_status() {
 }
 
 run_watchdog() {
-    ensure_initial_templates || return 0
+    if ! is_bootstrap_initialized; then
+        if is_interactive; then
+            manual_initialize
+            return $?
+        fi
+        log "当前未完成首次初始化，定时任务跳过。请先手动执行 $SCRIPT_PATH"
+        return 0
+    fi
 
-    start_redis || return 1
+    sync_runtime_ports
 
-    if needs_official_setup; then
-        log "检测到尚未完成官方安装，启动首次安装向导"
-        start_sub2api || return 1
+    install_latest_release
+    update_result=$?
+    if [ "$update_result" -eq 0 ]; then
+        log "检测到更新，执行重启"
+        start_redis || return 1
+        restart_sub2api || return 1
         clean_logs
         ensure_crontab
         return 0
     fi
 
-    install_latest_release
-    update_result=$?
+    if [ -f "$CONFIG_FILE" ]; then
+        fix_config_if_needed
+        config_fix_result=$?
+        if [ "$config_fix_result" -eq 1 ]; then
+            sync_runtime_ports
+            validate_runtime_port || return 1
+            log "检测到配置已自动修正，执行重启使其生效"
+            start_redis || return 1
+            restart_sub2api || return 1
+            clean_logs
+            ensure_crontab
+            return 0
+        fi
+        sync_runtime_ports
+        validate_runtime_port || return 1
+    fi
 
-    if [ "$update_result" -eq 0 ]; then
-        log "检测到更新，重启服务"
-        restart_services || return 1
-    elif [ "$update_result" -eq 2 ]; then
-        check_running_and_restart_if_needed || return 1
+    start_redis || return 1
+
+    if ! is_sub2api_running; then
+        log "检测到 $APP_NAME 进程不存在，执行启动"
+        start_sub2api || return 1
     else
-        log "更新检查失败，转为仅检查运行状态"
-        check_running_and_restart_if_needed || return 1
+        log "$APP_NAME 运行正常"
+        log "Redis 运行正常"
     fi
 
     clean_logs
@@ -486,43 +638,38 @@ run_watchdog() {
 }
 
 case "$1" in
-    start)
-        ensure_initial_templates || exit 0
-        start_redis && start_sub2api
+    ""|start)
+        run_watchdog
         ;;
     stop)
         stop_sub2api
-        stop_redis
         ;;
     restart)
-        ensure_initial_templates || exit 0
-        restart_services
-        ;;
-    update)
-        ensure_initial_templates || exit 0
-        install_latest_release
-        result=$?
-        if [ "$result" -eq 0 ]; then
-            restart_services
-        elif [ "$result" -eq 2 ]; then
-            log "无需更新"
-            exit 0
+        if ! is_bootstrap_initialized; then
+            manual_initialize
         else
-            exit 1
+            start_redis && restart_sub2api
         fi
         ;;
     status)
         show_status
         ;;
-    init)
-        ensure_initial_templates || exit 0
-        log "配置文件已存在，无需重新生成"
+    update)
+        install_latest_release
+        result=$?
+        if [ "$result" -eq 0 ]; then
+            start_redis && restart_sub2api
+        elif [ "$result" -eq 2 ]; then
+            log "无需更新"
+        else
+            exit 1
+        fi
         ;;
-    "")
-        run_watchdog
+    init)
+        manual_initialize
         ;;
     *)
-        echo "用法: $0 [start|stop|restart|update|status|init]"
+        echo "用法: $0 [start|stop|restart|status|update|init]"
         exit 1
         ;;
 esac
